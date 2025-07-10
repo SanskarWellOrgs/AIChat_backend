@@ -207,6 +207,7 @@
       <span id="fileName" class="file-name"></span>
       <button type="button" class="pin-upload" id="fileBtn" title="Upload File">📎</button>
       <input type="file" id="fileInput" class="file-input" />
+      <span id="uploadStatus"></span>
       <select id="roleSelect">
         <option value="Teacher">Teacher</option>
         <option value="Student">Student</option>
@@ -244,18 +245,36 @@
   let uploadedFile = null;
   let uploadedFileUrl = null; // Store file_url persistently
 
-  fileBtn.onclick = () => fileInput.click();
-  fileInput.onchange = () => {
-    if (fileInput.files && fileInput.files.length > 0) {
-      uploadedFile = fileInput.files[0];
-      fileName.textContent = uploadedFile.name.length > 22 ? uploadedFile.name.slice(0, 19) + '...' : uploadedFile.name;
-      uploadedFileUrl = null; // Clear file_url on new selection, force re-upload
-    } else {
-      uploadedFile = null;
-      fileName.textContent = "";
-      uploadedFileUrl = null;
+fileBtn.onclick = () => fileInput.click();
+fileInput.onchange = async () => {
+  if (fileInput.files && fileInput.files.length > 0) {
+    uploadedFile = fileInput.files[0];
+    fileName.textContent = uploadedFile.name.length > 22 ? uploadedFile.name.slice(0, 19) + '...' : uploadedFile.name;
+    uploadedFileUrl = null; // Clear file_url on new selection, force re-upload
+
+    // --- Immediate upload on file select ---
+    const formData = new FormData();
+    formData.append('file', uploadedFile);
+    document.getElementById('uploadStatus').textContent = 'Uploading...';
+    try {
+      const resp = await fetch('/upload', { method: 'POST', body: formData });
+      const j = await resp.json();
+      if (j.file_url) {
+        uploadedFileUrl = j.file_url;
+        document.getElementById('uploadStatus').textContent = 'File uploaded!';
+      } else {
+        document.getElementById('uploadStatus').textContent = 'Upload failed!';
+      }
+    } catch (err) {
+      document.getElementById('uploadStatus').textContent = 'Upload error!';
     }
-  };
+  } else {
+    uploadedFile = null;
+    fileName.textContent = "";
+    uploadedFileUrl = null;
+    document.getElementById('uploadStatus').textContent = '';
+  }
+};
 
   // ---------- ROLE SELECT ----------
   document.getElementById('roleSelect').addEventListener('change', function() {
@@ -263,77 +282,57 @@
   });
 
   // ---------- AUDIO STREAMING UTILS ----------
-  let audioContext = null;
-  let audioQueue = [];
-  let isAudioPlaying = false;
-  let stopAudioImmediately = false; // For forced stop
 
-  async function playNextAudio() {
-    if (stopAudioImmediately) {
-      audioQueue = [];
-      isAudioPlaying = false;
-      stopAudioImmediately = false;
-      return;
-    }
-    if (isAudioPlaying) return;
-    if (audioQueue.length === 0) {
-      isAudioPlaying = false;
-      return;
-    }
-    const nextAudio = audioQueue.shift();
-    if (!nextAudio.buffer || nextAudio.buffer.byteLength === 0) {
-      playNextAudio();
-      return;
-    }
-    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    // For iOS/Safari auto-play
-    try { await audioContext.resume(); } catch {}
-    isAudioPlaying = true;
-    audioContext.decodeAudioData(
-      nextAudio.buffer instanceof ArrayBuffer ? nextAudio.buffer : nextAudio.buffer.buffer,
-      (buf) => {
-        if (stopAudioImmediately) {
-          isAudioPlaying = false;
-          audioQueue = [];
-          stopAudioImmediately = false;
-          return;
-        }
-        const src = audioContext.createBufferSource();
-        src.buffer = buf;
-        src.connect(audioContext.destination);
-        src.onended = () => {
-          if (stopAudioImmediately) {
-            isAudioPlaying = false;
-            audioQueue = [];
-            stopAudioImmediately = false;
-            return;
-          }
-          isAudioPlaying = false;
-          playNextAudio();
-        };
-        src.start();
-      },
-      () => {
-        isAudioPlaying = false;
-        playNextAudio();
-      }
-    );
+let audioQueue = [];
+let isAudioPlaying = false;
+let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+// Utility: convert backend hex string to ArrayBuffer
+function hexToArrayBuffer(hex) {
+  let bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
   }
+  return bytes.buffer;
+}
 
-  function addAudioChunk(arrayBuffer) {
-    audioQueue.push({ buffer: arrayBuffer });
-    playNextAudio();
-  }
+// Call this on each new chunk (pass hex string from backend as input)
+function enqueueAudioChunk(hexString) {
+  audioQueue.push(hexToArrayBuffer(hexString));
+  if (!isAudioPlaying) playNextAudio();
+}
 
-  function stopAllAudio() {
-    stopAudioImmediately = true;
-    audioQueue = [];
-    // Try to close and re-create the context for total stop
-    try { if (audioContext) audioContext.close(); } catch {}
-    audioContext = null;
+function playNextAudio() {
+  if (audioQueue.length === 0) {
     isAudioPlaying = false;
+    return;
   }
+  isAudioPlaying = true;
+  const buffer = audioQueue.shift();
+  audioContext.decodeAudioData(buffer, (decodedData) => {
+    const source = audioContext.createBufferSource();
+    source.buffer = decodedData;
+    source.connect(audioContext.destination);
+    source.onended = () => {
+      isAudioPlaying = false;
+      playNextAudio();
+    };
+    source.start(0);
+  }, () => {
+    // On decode error, skip and play next
+    isAudioPlaying = false;
+    playNextAudio();
+  });
+}
 
+function stopAllAudio() {
+  audioQueue = [];
+  if (audioContext) {
+    try { audioContext.close(); } catch {}
+  }
+  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  isAudioPlaying = false;
+}
   // ---------- MAIN FORM SUBMISSION & SSE ----------
   const chatBox = document.getElementById('chatBox');
   const inputForm = document.getElementById('inputForm');
@@ -391,13 +390,7 @@
 
     // ----- FILE UPLOAD LOGIC -----
     // If no file uploaded yet or a new file is selected, upload file and cache file_url
-    if (uploadedFile && !uploadedFileUrl) {
-      const fd = new FormData();
-      fd.append('file', uploadedFile);
-      const resp = await fetch('/upload', { method: 'POST', body: fd });
-      const j = await resp.json();
-      uploadedFileUrl = j.file_url || null;
-    }
+
 
     // Start SSE connection for streaming output
     let url = `/stream-answer?question=${encodeURIComponent(query)}&role=${encodeURIComponent(role)}&grade=${encodeURIComponent(grade)}&language=${encodeURIComponent(language)}`;
@@ -449,10 +442,7 @@
       }
       else if (data.type === "audio_chunk") {
         audioStatus.style.display = "";
-        // Convert hex string to ArrayBuffer
-        const hex = data.chunk;
-        const buf = new Uint8Array(hex.match(/.{1,2}/g).map(x=>parseInt(x,16))).buffer;
-        addAudioChunk(buf);
+        enqueueAudioChunk(data.chunk);
       }
       else if (data.type === "audio_done") {
         audioStatus.textContent = "";
