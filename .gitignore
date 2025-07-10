@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+*.env.*
+
+# FastAPI/Static/Temp
+*.db
+*.sqlite3
+*.log
+*.pid
+
+# System files
+.DS_Store
+Thumbs.db
+
+# VSCode/Editor
+.vscode/
+.idea/
+*.swp
+
+# Model/Vector/Cache
+audio_sents/
+graphs/
+*.npy
+*.npz
+
+# PDF upload temp files (if you use them)
+*.pdf
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Coverage/Test
+htmlcov/
+.tox/
+.coverage
+coverage.xml
+*.cover
+.cache
+
+# Others (optional)
+frontend/node_modules/
+node_modules/
