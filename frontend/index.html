@@ -283,9 +283,8 @@ fileInput.onchange = async () => {
 
   // ---------- AUDIO STREAMING UTILS ----------
 
-let audioQueue = [];
-let isAudioPlaying = false;
 let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+let playTime = 0;
 
 // Utility: convert backend hex string to ArrayBuffer
 function hexToArrayBuffer(hex) {
@@ -298,40 +297,30 @@ function hexToArrayBuffer(hex) {
 
 // Call this on each new chunk (pass hex string from backend as input)
 function enqueueAudioChunk(hexString) {
-  audioQueue.push(hexToArrayBuffer(hexString));
-  if (!isAudioPlaying) playNextAudio();
-}
-
-function playNextAudio() {
-  if (audioQueue.length === 0) {
-    isAudioPlaying = false;
-    return;
-  }
-  isAudioPlaying = true;
-  const buffer = audioQueue.shift();
-  audioContext.decodeAudioData(buffer, (decodedData) => {
-    const source = audioContext.createBufferSource();
-    source.buffer = decodedData;
-    source.connect(audioContext.destination);
-    source.onended = () => {
-      isAudioPlaying = false;
-      playNextAudio();
-    };
-    source.start(0);
-  }, () => {
-    // On decode error, skip and play next
-    isAudioPlaying = false;
-    playNextAudio();
-  });
+  const buffer = hexToArrayBuffer(hexString);
+  audioContext.decodeAudioData(
+    buffer,
+    decodedData => {
+      const source = audioContext.createBufferSource();
+      source.buffer = decodedData;
+      source.connect(audioContext.destination);
+      const now = audioContext.currentTime;
+      if (playTime < now) playTime = now + 0.05;
+      source.start(playTime);
+      playTime += decodedData.duration;
+    },
+    () => {
+      // skip on decode error
+    }
+  );
 }
 
 function stopAllAudio() {
-  audioQueue = [];
   if (audioContext) {
     try { audioContext.close(); } catch {}
   }
   audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  isAudioPlaying = false;
+  playTime = 0;
 }
   // ---------- MAIN FORM SUBMISSION & SSE ----------
   const chatBox = document.getElementById('chatBox');
