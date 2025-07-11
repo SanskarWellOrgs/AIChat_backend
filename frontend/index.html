@@ -54,7 +54,8 @@
       font-size: 1.09rem;
       border-radius: 16px;
       margin-bottom: 2px;
-      word-break: break-word;
+      white-space: pre-wrap;
+      word-break: normal;
       line-height: 1.44;
     }
     .bot {
@@ -209,8 +210,8 @@
       <input type="file" id="fileInput" class="file-input" />
       <span id="uploadStatus"></span>
       <select id="roleSelect">
-        <option value="Teacher">Teacher</option>
-        <option value="Student">Student</option>
+        <option value="teacher">Teacher</option>
+        <option value="student">Student</option>
       </select>
       <select id="gradeSelect" class="grade-select" style="display:none;">
         <option value="">Select Grade</option>
@@ -228,8 +229,8 @@
         <option value="Grade 12">Grade 12</option>
       </select>
       <select id="languageSelect">
-        <option value="English">English</option>
-        <option value="Arabic">Arabic</option>
+        <option value="english">English</option>
+        <option value="arabic">Arabic</option>
       </select>
       <input type="text" class="text-input" id="queryInput" placeholder="Type your message..." />
       <button type="submit" class="send-btn">Send</button>
@@ -278,7 +279,7 @@ fileInput.onchange = async () => {
 
   // ---------- ROLE SELECT ----------
   document.getElementById('roleSelect').addEventListener('change', function() {
-    document.getElementById('gradeSelect').style.display = (this.value === 'Student') ? 'inline-block' : 'none';
+    document.getElementById('gradeSelect').style.display = (this.value === 'student') ? 'inline-block' : 'none';
   });
 
   // ---------- AUDIO STREAMING UTILS ----------
@@ -304,10 +305,12 @@ function enqueueAudioChunk(hexString) {
       const source = audioContext.createBufferSource();
       source.buffer = decodedData;
       source.connect(audioContext.destination);
+      // Play immediately on decode to minimize any gap between chunks
+      // Schedule playback to avoid overlap: start immediately or at playTime
       const now = audioContext.currentTime;
-      if (playTime < now) playTime = now + 0.05;
-      source.start(playTime);
-      playTime += decodedData.duration;
+      const startTime = playTime > now ? playTime : now;
+      source.start(startTime);
+      playTime = startTime + decodedData.duration;
     },
     () => {
       // skip on decode error
@@ -392,6 +395,8 @@ function stopAllAudio() {
     botResponded = false;
     eventSource = new EventSource(url);
     textStreamingActive = true; // Lock input
+    // buffer audio chunks per sentence to decode once
+    let currentAudioChunks = [];
 
     // Streaming state
     let partialText = "";
@@ -426,14 +431,21 @@ function stopAllAudio() {
         chatBox.scrollTop = chatBox.scrollHeight;
       }
       else if (data.type === "audio_pending") {
+        // start buffering a new sentence audio
         audioStatus.textContent = "Speaking…";
         audioStatus.style.display = "";
+        currentAudioChunks = [];
       }
       else if (data.type === "audio_chunk") {
+        // collect chunks, decode only after done
         audioStatus.style.display = "";
-        enqueueAudioChunk(data.chunk);
+        currentAudioChunks.push(data.chunk);
       }
       else if (data.type === "audio_done") {
+        // decode full sentence audio in one go
+        if (currentAudioChunks.length) {
+          enqueueAudioChunk(currentAudioChunks.join(''));
+        }
         audioStatus.textContent = "";
         audioStatus.style.display = "none";
       }
