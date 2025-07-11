@@ -28,6 +28,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import shutil
 
+# --- System-level LaTeX prohibition (always enforced) ---
+SYSTEM_LATEX_BAN = (
+    "STRICT RULE: Do NOT generate any LaTeX code or markup (\\frac, \\left, \\right, $...$). "
+    "Only use plain-text stacked fractions when required.\n"
+)
+
 
 # OpenAI-style TTS voice names mapped to Edge TTS voices
 OPENAI_TO_EDGE_VOICE = {
@@ -423,7 +429,7 @@ async def stream_answer(
     context = pdf_idx.get_context(question, topk=1)
 
     norm_question = question.strip().lower()
-    is_teacher = (role == "teacher")
+    is_teacher = (role or "").strip().lower() == "teacher"
     # Extract the prompt text after /image or /graph
 
 
@@ -505,7 +511,9 @@ async def stream_answer(
                 "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
                 "Content-Type": "application/json"
             }
-            if language == "arabic":
+            # Use Arabic-only links when language indicates Arabic; otherwise default to English
+            lang_lower = (language or "").strip().lower()
+            if lang_lower == "arabic":
                 system_prompt = (
                     "يرجى الإجابة باللغة العربية فقط. بعد الإجابة، قدم قائمة بأهم الروابط العربية المتعلقة بالسؤال، "
                     "يجب أن تكون جميع الصفحات والمصادر باللغة العربية فقط، وتجنب المواقع الإنجليزية، "
@@ -540,14 +548,25 @@ async def stream_answer(
                         # Parse the assistant's JSON content to extract explanation and links
                         links = []
                         explanation = None
+                        # Always capture the raw assistant message as explanation, then strip any code-fenced JSON and parse if structured
+                        msg_content = data['choices'][0]['message']['content']
+                        # Remove any trailing code-fenced JSON block (``` ... ```)
+                        raw_expl = msg_content.split('```')[0].strip()
+                        explanation = raw_expl
                         try:
-                            msg_content = data['choices'][0]['message']['content']
                             parsed = json.loads(msg_content)
-                            explanation = parsed.get('explanation')
+                            # Use structured explanation if present
+                            explanation = parsed.get('explanation', explanation)
                             links = parsed.get('links', [])
                         except Exception:
-                            # Fallback: no parsed content
-                            pass
+                            # Fallback: extract links from Perplexity fields if available
+                            if data.get('search_results'):
+                                links = [
+                                    {'title': r.get('title', ''), 'url': r.get('url', '')}
+                                    for r in data.get('search_results', [])
+                                ]
+                            elif data.get('citations'):
+                                links = [{'title': '', 'url': u} for u in data.get('citations', [])]
                         # Send structural Perplexity response to the frontend
                         yield f"data: {json.dumps({'type': 'perplexity_full', 'explanation': explanation, 'links': links})}\n\n"
                         # TTS: read explanation and each link summary with Edge TTS
@@ -559,16 +578,23 @@ async def stream_answer(
                             if summary:
                                 text_to_read += ' ' + summary
                         if text_to_read:
-                            # Convert LaTeX fractions to stacked form, then sanitize for TTS
-                            processed = latex_frac_to_stacked(text_to_read)
-                            clean_for_tts = sanitize_for_tts(processed)
-                            print("[TTS DEBUG] Sending this to edge-tts:", repr(clean_for_tts), "Voice:", tts_voice)
-                            communicate_stream = edge_tts.Communicate(clean_for_tts, voice=tts_voice)
-                            yield f"data: {json.dumps({'type':'audio_pending','sentence': text_to_read})}\n\n"
-                            async for chunk in communicate_stream.stream():
-                                if chunk['type'] == 'audio':
-                                    yield f"data: {json.dumps({'type':'audio_chunk','sentence': text_to_read, 'chunk': chunk['data'].hex()})}\n\n"
-                            yield f"data: {json.dumps({'type':'audio_done','sentence': text_to_read})}\n\n"
+                            # Debug log for weblink TTS activation
+                            print("[WEBLINK TTS] text_to_read:", repr(text_to_read))
+                            # Stream TTS sentence by sentence (like general chat) for continuous playback
+                            for sent in re.split(r'(?<=[\.\!\؟\?])\s+', text_to_read):
+                                sent = sent.strip()
+                                print("[WEBLINK TTS] sentence:", repr(sent))
+                                if not sent:
+                                    continue
+                                processed = latex_frac_to_stacked(sent)
+                                clean_sent = sanitize_for_tts(processed)
+                                print("[TTS DEBUG] Sending this to edge-tts:", repr(clean_sent), "Voice:", tts_voice)
+                                yield f"data: {json.dumps({'type':'audio_pending','sentence': sent})}\n\n"
+                                communicate_stream = edge_tts.Communicate(clean_sent, voice=tts_voice)
+                                async for chunk in communicate_stream.stream():
+                                    if chunk['type'] == 'audio':
+                                        yield f"data: {json.dumps({'type':'audio_chunk','sentence': sent, 'chunk': chunk['data'].hex()})}\n\n"
+                                yield f"data: {json.dumps({'type':'audio_done','sentence': sent})}\n\n"
                     except Exception as e:
                         yield f"data: {json.dumps({'type': 'error', 'data': 'Perplexity API error: ' + str(e)})}\n\n"
             return StreamingResponse(perplexity_stream(), media_type="text/event-stream")
@@ -1574,9 +1600,9 @@ Use it **properly for follow-up answers based on contex**.
     # You can add logic for language here as well if needed
 
     prompt_header = ""
-    if role == "teacher":
+    if (role or "").strip().lower() == "teacher":
         prompt_header = teacher_prompt
-    elif role == "student":
+    elif (role or "").strip().lower() == "student":
         try:
             grade_num = int(grade)
             if 1 <= grade_num <= 6:
@@ -1609,7 +1635,7 @@ Use it **properly for follow-up answers based on contex**.
     prompt_header.replace("{previous_history}", formatted_history)
     + f"\n\nContext:\n{context}\n\nQuestion: {question}\n\nAnswer using only the context above."
     )
-    system_message = {"role": "system", "content": "You are an expert assistant."}
+    system_message = {"role": "system", "content": SYSTEM_LATEX_BAN + "You are an expert assistant."}
     user_message = {"role": "user", "content": prompt}
     messages = [system_message, user_message]
 
@@ -1673,7 +1699,6 @@ Use it **properly for follow-up answers based on contex**.
                     end = m.end()
                     sent = buffer[last:end].strip()
                     if sent:
-                        # stream this sentence to TTS
                         async for audio_event in stream_audio(sent):
                             yield audio_event
                     last = end
