@@ -236,7 +236,26 @@ def text_to_chunks(text, max_tokens):
         chunks.append(" ".join(current_chunk))
     return chunks
 
+def split_into_sentences(text):
+    import re
+    # Split by punctuation (both Arabic and English)
+    return [s.strip() for s in re.split(r'(?<=[\.\!\؟\?])\s+', text) if s.strip()]
 
+def smart_chunker(text, min_length=120):
+    import re
+    sentences = [s.strip() for s in re.split(r'(?<=[\.\!\؟\?])\s+', text) if s.strip()]
+    buffer = ""
+    for s in sentences:
+        if len(buffer) + len(s) < min_length:
+            buffer += (" " if buffer else "") + s
+        else:
+            if buffer:
+                print("[TTS CHUNK]", repr(buffer))
+                yield buffer
+            buffer = s
+    if buffer:
+        print("[TTS CHUNK]", repr(buffer))
+        yield buffer
 
 async def generate_weblink_perplexity(query):
     headers = {
@@ -312,6 +331,44 @@ async def generate_runware_image(prompt):
 
 def remove_punctuation(text):
     return re.sub(r'[{}]+'.format(re.escape(string.punctuation)), '', text)
+
+# --- LaTeX fraction and cleanup helpers ---
+import re
+
+def latex_frac_to_stacked(text):
+    # Replace all \frac{a}{b} with stacked plain text
+    pattern = r"\\frac\s*\{([^{}]+)\}\{([^{}]+)\}"
+    def repl(match):
+        num = match.group(1).strip()
+        denom = match.group(2).strip()
+        width = max(len(num), len(denom))
+        line = '―' * (width + 2)
+        num_pad = (width - len(num)) // 2
+        denom_pad = (width - len(denom)) // 2
+        num_str = " " * (num_pad + 1) + num
+        denom_str = " " * (denom_pad + 1) + denom
+        return f"{num_str}\n{line}\n{denom_str}"
+    return re.sub(pattern, repl, text)
+
+
+def sanitize_for_tts(text):
+    # Remove LaTeX commands (\frac, \left, \right, etc.)
+    text = re.sub(r'\\[a-zA-Z]+', '', text)
+    text = text.replace('{', '').replace('}', '')
+    text = text.replace('$', '')
+    text = text.replace('\\', '')
+    text = text.replace('^', ' أس ')  # Say "power" in Arabic
+    text = re.sub(r'_', ' ', text)   # Say "sub"
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+
+def remove_latex(text):
+    # Remove remaining LaTeX commands and curly braces
+    text = re.sub(r"\\[a-zA-Z]+", "", text)
+    text = text.replace("{", "").replace("}", "")
+    return text
 
 class PDFIndex:
     def __init__(self):
@@ -502,8 +559,11 @@ async def stream_answer(
                             if summary:
                                 text_to_read += ' ' + summary
                         if text_to_read:
-                            sent_for_tts = remove_punctuation(text_to_read)
-                            communicate_stream = edge_tts.Communicate(sent_for_tts, voice=tts_voice)
+                            # Convert LaTeX fractions to stacked form, then sanitize for TTS
+                            processed = latex_frac_to_stacked(text_to_read)
+                            clean_for_tts = sanitize_for_tts(processed)
+                            print("[TTS DEBUG] Sending this to edge-tts:", repr(clean_for_tts), "Voice:", tts_voice)
+                            communicate_stream = edge_tts.Communicate(clean_for_tts, voice=tts_voice)
                             yield f"data: {json.dumps({'type':'audio_pending','sentence': text_to_read})}\n\n"
                             async for chunk in communicate_stream.stream():
                                 if chunk['type'] == 'audio':
@@ -535,12 +595,12 @@ async def stream_answer(
    x1 + x2
    ——————
       2
-- DO NOT use LaTeX (\frac, \left, \right) or any code formatting. Only display the stacked fraction in plain text as above.
+- DO NOT use LaTeX (\\frac, \\left, \\right) or any code formatting. Only display the stacked fraction in plain text as above.
 - AND FOR ARABIC - - متطلب صارم: إذا كانت الإجابة تحتوي على كسر رياضي، يجب دائمًا كتابة البسط في السطر الأعلى، والمقام في السطر الأسفل، مع خط أفقي بينهما، مثل:
    ع1 + ع2
    ——————
       2
-- لا تستخدم LaTeX مثل \frac أو أي تنسيق برمجي. فقط اعرض الكسر بهذه الطريقة النصية البسيطة.
+- لا تستخدم LaTeX مثل \\frac أو أي تنسيق برمجي. فقط اعرض الكسر بهذه الطريقة النصية البسيطة.
 
 ****STRICT REQUIREMENTS****
 - BEFORE RESPONDING: CAREFULLY READ PROMPT DESCRIPTION AND UNDERSTAND USER QUESTION {input}
@@ -743,12 +803,12 @@ Always provide meaningful answers aligned with curriculum and enhanced with rele
    x1 + x2
    ——————
       2
-- DO NOT use LaTeX (\frac, \left, \right) or any code formatting. Only display the stacked fraction in plain text as above.
+- DO NOT use LaTeX (\\frac, \\left, \\right) or any code formatting. Only display the stacked fraction in plain text as above.
 - AND FOR ARABIC - - متطلب صارم: إذا كانت الإجابة تحتوي على كسر رياضي، يجب دائمًا كتابة البسط في السطر الأعلى، والمقام في السطر الأسفل، مع خط أفقي بينهما، مثل:
    ع1 + ع2
    ——————
       2
-- لا تستخدم LaTeX مثل \frac أو أي تنسيق برمجي. فقط اعرض الكسر بهذه الطريقة النصية البسيطة.
+- لا تستخدم LaTeX مثل \\frac أو أي تنسيق برمجي. فقط اعرض الكسر بهذه الطريقة النصية البسيطة.
 
 
 
@@ -1265,12 +1325,12 @@ No other responses are allowed.
    x1 + x2
    ——————
       2
-- DO NOT use LaTeX (\frac, \left, \right) or any code formatting. Only display the stacked fraction in plain text as above.
+- DO NOT use LaTeX (\\frac, \\left, \\right) or any code formatting. Only display the stacked fraction in plain text as above.
 - AND FOR ARABIC - - متطلب صارم: إذا كانت الإجابة تحتوي على كسر رياضي، يجب دائمًا كتابة البسط في السطر الأعلى، والمقام في السطر الأسفل، مع خط أفقي بينهما، مثل:
    ع1 + ع2
    ——————
       2
-- لا تستخدم LaTeX مثل \frac أو أي تنسيق برمجي. فقط اعرض الكسر بهذه الطريقة النصية البسيطة.
+- لا تستخدم LaTeX مثل \\frac أو أي تنسيق برمجي. فقط اعرض الكسر بهذه الطريقة النصية البسيطة.
 
 
     ****STRICT REQUIREMENT**** :- ****BEFORE RESPOND CAREFULLY READ PROMPT DESCRIPTION AND UNDERSTAND USER QUESTION {input} THEN RESPOND BASED ON CRITERIA OF PROMPT ALSO ```***FINAL RESPONSE OF BOT WILL BE DETAILED RESPONSE WHICH IS OF ATLEAST 2 PARAGRAPHS(***DONT INCLUDE GENERAL STRICT*** *CURRICULUM BASED DETAILED*) (IF QUESTION IS RELATED TO CURRICULUM CONTEXT)***``` ***                                                  
@@ -1531,10 +1591,18 @@ Use it **properly for follow-up answers based on contex**.
         prompt_header = ""  # default if no role selected
 
     # Add language instruction if needed
-    if language == "arabic":
-        prompt_header += "\n(Please answer in Arabic language.)"
-    elif language == "english":
-        prompt_header += "\n(Please answer in English language.)"
+    if language and language.lower().startswith("ar"):
+        # Enforce strict Arabic-only output regardless of input language/context
+        prompt_header = (
+            "STRICT RULE: Always answer ONLY in Arabic, even if the question/context/history is in another language. "
+            "Translate all context if needed. Never use English in your answer.\n"
+        ) + prompt_header
+    elif language and language.lower().startswith("en"):
+        # Enforce strict English-only output regardless of input language/context
+        prompt_header = (
+            "STRICT RULE: Always answer ONLY in English, even if the question/context/history is in another language. "
+            "Translate all context if needed. Never use Arabic in your answer.\n"
+        ) + prompt_header
 
     # Final prompt: role/language + context + question
     prompt = (
@@ -1550,7 +1618,8 @@ Use it **properly for follow-up answers based on contex**.
     answer_so_far = ""   # <--- this accumulates the FULL answer
 
     # Set TTS voice depending on language (shimmer/Jenny for English, shimmer-arabic/Zariyah for Arabic)
-    if language == "arabic":
+    lang = (language or "").strip().lower()
+    if lang.startswith("ar"):
         tts_voice = OPENAI_TO_EDGE_VOICE["shimmer-arabic"]
     else:
         tts_voice = OPENAI_TO_EDGE_VOICE["shimmer"]
@@ -1561,8 +1630,14 @@ Use it **properly for follow-up answers based on contex**.
 
         async def stream_audio(sentence):
             try:
-                sent_for_tts = remove_emojis(remove_punctuation(sentence))
-                communicate_stream = edge_tts.Communicate(sent_for_tts, voice=tts_voice)
+                # Transform any LaTeX fractions into stacked form before sanitizing
+                sent_for_tts = latex_frac_to_stacked(sentence)
+                clean_sentence = sanitize_for_tts(sent_for_tts)
+                if not clean_sentence.strip():
+                    print("[TTS SKIP] Empty or whitespace sentence, skipping.")
+                    return
+                print("[TTS DEBUG] Sending this to edge-tts:", repr(clean_sentence), "Voice:", tts_voice)
+                communicate_stream = edge_tts.Communicate(clean_sentence, voice=tts_voice)
                 yield f"data: {json.dumps({'type':'audio_pending','sentence': sentence})}\n\n"
                 async for chunk in communicate_stream.stream():
                     if chunk["type"] == "audio":
@@ -1577,34 +1652,36 @@ Use it **properly for follow-up answers based on contex**.
                 messages=messages,
                 stream=True
             )
+            # Dynamically buffer and flush complete sentences to TTS immediately
+            buffer = ""
             for chunk in stream:
                 delta = chunk.choices[0].delta
                 content = getattr(delta, 'content', None)
-                if content:
-                    buffer += content
-                    answer_so_far += content
+                if not content:
+                    continue
+                buffer += content
+                answer_so_far += content
 
-                    # Stream the current answer immediately
-                    yield f"data: {json.dumps({'type':'partial','partial': answer_so_far})}\n\n"
+                # Send updated partial text to frontend
+                cleaned = latex_frac_to_stacked(answer_so_far)
+                cleaned = remove_latex(cleaned)
+                yield f"data: {json.dumps({'type':'partial','partial': cleaned})}\n\n"
 
-                    # Sentence-by-sentence audio streaming
-                    last = 0
-                    for m in SENT_END.finditer(buffer):
-                        sent = buffer[last:m.end()].strip()
-                        if sent and len(sent) > 1:
-                            async for audio_event in stream_audio(sent):
-                                yield audio_event
-                        last = m.end()
-                    buffer = buffer[last:]
+                # Flush full sentences for TTS as soon as they complete
+                last = 0
+                for m in re.finditer(r'(?<=[\.\!\؟\?])\s+', buffer):
+                    end = m.end()
+                    sent = buffer[last:end].strip()
+                    if sent:
+                        # stream this sentence to TTS
+                        async for audio_event in stream_audio(sent):
+                            yield audio_event
+                    last = end
+                buffer = buffer[last:]
 
-                if await request.is_disconnected():
-                    return
-
-            # Flush any leftover text as the last sentence
-            if buffer.strip() and len(buffer.strip()) > 1:
+            # After streaming ends, flush any leftover as final sentence
+            if buffer.strip():
                 sent = buffer.strip()
-                answer_so_far += sent
-                yield f"data: {json.dumps({'type':'partial','partial': answer_so_far})}\n\n"
                 async for audio_event in stream_audio(sent):
                     yield audio_event
 
